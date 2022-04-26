@@ -1,0 +1,454 @@
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /> 
+    <title>Welcome to Cyber Threat Weather Powered By Quick Heal</title> 
+    <link href='https://api.tiles.mapbox.com/mapbox-gl-js/v1.10.0/mapbox-gl.css' rel='stylesheet' />   
+    <script src="https://unpkg.com/deck.gl@^8.6.0/dist.min.js"></script>
+    <script src="https://unpkg.com/@deck.gl/carto@^8.6.0/dist.min.js"></script>
+    <script src="https://libs.cartocdn.com/mapbox-gl/v1.13.0/mapbox-gl.js"></script>
+    <link href="https://libs.cartocdn.com/mapbox-gl/v1.13.0/mapbox-gl.css" rel="stylesheet" /> 
+  </head>
+    
+  <body style="margin: 0; padding: 0; background:("")  ">
+    <div id="map" style="width: 50vw; height: 50vh; overflow: hidden;"></div>
+    <div style={{ position: 'absolute', left: x, top: y}} />
+  </body>
+
+  <script type="text/javascript">
+    class AnimatedArcLayer extends deck.ArcLayer {
+      getShaders() {
+        const shaders = super.getShaders();
+        shaders.inject = {
+          'vs:#decl': `\
+            uniform vec2 timeRange;
+            attribute float instanceSourceTimestamp;
+            attribute float instanceTargetTimestamp;
+            varying float vTimestamp;
+          `,
+          'vs:#main-end': `\
+             vTimestamp = mix(instanceSourceTimestamp, instanceTargetTimestamp, segmentRatio);
+          `,
+          'fs:#decl': `\
+            uniform vec2 timeRange;
+            varying float vTimestamp;
+          `,
+          'fs:#main-start': `\
+            if (vTimestamp < timeRange.x || vTimestamp > timeRange.y) {
+              discard;
+            }
+          `,
+          'fs:DECKGL_FILTER_COLOR': `\
+            color.a *= (vTimestamp - timeRange.x) / (timeRange.y - timeRange.x);`
+        };
+          return shaders;
+      }
+
+      initializeState() {
+        super.initializeState();
+        this.getAttributeManager().addInstanced({
+          instanceSourceTimestamp: {
+            size: 1,
+            accessor: 'getSourceTimestamp'
+          },
+          instanceTargetTimestamp: {
+            size: 1,
+            accessor: 'getTargetTimestamp'
+          }
+        });
+      }
+
+      draw(params) {
+        params.uniforms = Object.assign({}, params.uniforms, {
+          timeRange: this.props.timeRange
+        });
+        super.draw(params);
+      }
+    }
+
+    AnimatedArcLayer.layerName = 'AnimatedArcLayer';
+    AnimatedArcLayer.defaultProps = {
+      getSourceTimestamp: {type: 'accessor', value: 0},
+      getTargetTimestamp: {type: 'accessor', value: 1},
+      timeRange: {type: 'array', compare: true, value: [0, 1]}
+    };
+
+    const INITIAL_VIEW_STATE = {
+        longitude: 77.4126,
+        latitude: 23.2599,
+        zoom: 3.8,
+        maxZoom: 16,
+        pitch: 0,
+        bearing: 0
+    };
+      
+      
+
+
+    const TIME_WINDOW = 600; // 10 minutes
+    //const TIME_WINDOW = 900; // 15 minutes
+    const EARTH_RADIUS_METERS = 6.3e6;
+    const MIN_TIME = 5;
+    const MAX_TIME = 103289;
+    const SEC_PER_DAY = 60 * 60 * 24;
+
+    const ambientLight = new deck.AmbientLight({
+      color: [255, 255, 255],
+      intensity: 0.5
+    });
+
+    const sunLight = new deck._SunLight({
+      color: [255, 255, 255],
+      intensity: 0.5,
+      timestamp: 0
+    });
+
+    // create lighting effect with light sources
+    const lightingEffect = new deck.LightingEffect({ ambientLight, sunLight });
+
+    // Look up the real date time from our artifical timestamp
+    function getDate(t) {
+      const timestamp = new Date('2020-01-14T00:00:00Z').getTime() + (t % SEC_PER_DAY) * 1000;
+      return new Date(timestamp);
+    }
+
+    async function initialize() {
+       
+       
+      // Fetch Data from CARTO
+         deck.carto.setDefaultCredentials({
+        username: 'public',
+        apiKey: 'default_public',
+        apiVersion: deck.carto.API_VERSIONS.V2,
+      });
+        
+        const ArcUrl = `https://raw.githubusercontent.com/vsy508/Cyber_Threat_Weather/main/geojson/arc_layer.json`;
+        //const flightsUrl = `https://raw.githubusercontent.com/jatin-sharma-10/ideathon/main/arcLayer.json`;
+        const jsonArcData = await fetch(ArcUrl).then(response => response.json());
+
+        const worldLandQuery = 'SELECT the_geom FROM ne_50m_land_world';
+        const worldLandUrl = `https://public.carto.com/api/v2/sql?q=${worldLandQuery}&format=geojson`;
+        const geoJsonWorldLandData = await fetch(worldLandUrl).then(response => response.json());
+        const geojson = await fetch(worldLandUrl).then(response => response.json());
+        
+        const url = 'https://public.carto.com/api/v2/sql?q=SELECT the_geom, weight FROM uber_pickup_locations&format=geojson';
+        const geojsonData = await fetch(url).then(response => response.json());
+           
+        const backgroundLayers = [/*
+        new deck.GeoJsonLayer({
+          id: 'earth-land-layer',
+            
+          data: geoJsonWorldLandData.features,
+          stroked: true,
+          filled: true,
+          opacity: 0,
+          getFillColor:	[51, 51, 58],
+          getElevation: 0,
+         }),
+           */
+           new deck.GeoJsonLayer({
+               data: "https://raw.githubusercontent.com/vsy508/Cyber_Threat_Weather/main/geojson/states.geojson", //dists11 states_india states
+               //getElevation:100000,
+               //getFillColor: [233,79,100],// Red
+               //getFillColor:[70, 188, 222],// Blue
+            
+               //getFillColor:[229, 114, 84], //orange
+               //testgetFillColor:[230, 98, 50],
+               //getFillColor:[215, 219, 221],
+               getFillColor:[169, 223, 191],    //green
+               //getFillColor:[22, 27, 33],
+               getLineColor: [233,79,100],
+               getLineWidth: 20,
+               getPointRadius: 40,            
+               pickable: false,
+               stroked: false,
+               filled: true,
+               extruded: false,
+               opacity: 0.2}),  
+      ];
+
+
+      // Create Deck.GL map
+        const deckgl = new deck.DeckGL({
+        //views: new deck._GlobeView(),
+        initialViewState: INITIAL_VIEW_STATE,
+        controller: true,
+        
+            //getTooltip: ({object}) => object && `${object.name}${object.address}`,
+            getTooltip: ({object}) => object && `Malware: ${object.malware} \n Previous place: ${object.start} \n Current place: ${object.end}`,
+          //getTooltip: ({object}) => object && `Number of Attacks: ${object.points.length}`,
+            
+
+            mapStyle: 'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json',
+                   /*
+          mapStyle: {
+          version: 8,
+          sources: {},
+          layers: [
+            {
+              id: 'background',
+              type: 'background',
+              paint: { 'background-color': '#1F1B24' }
+            }
+          ]
+        },*/
+        controller: true,
+        effects: [lightingEffect],
+        //layers: [backgroundLayers] 
+      });
+    
+  
+      let currentTime = 0;
+        
+        const MALE_COLOR = [0, 128, 255];
+        const color1 = [44, 186, 0];
+        const color2 = [163, 255, 0];
+        const color3 = [255, 244, 0];
+        const color4 = [255, 167, 0];
+        const color5 = [255, 0, 0];
+        const FEMALE_COLOR = [255, 0, 128];
+        const BANDS = [
+            {threshold: [1, 10], color: [44, 186, 0]},
+            {threshold: [10, 20], color: [163, 255, 0]},
+            {threshold: [20, 100], color: [255, 244, 0]},
+            {threshold: [100, 1000], color: [255, 167, 0]},
+            {threshold: [1000, 1000000], color: [255, 0, 0]}];
+        const colorRange = [
+            [255, 255, 178, 25],
+            [254, 217, 118, 85],
+            [254, 178, 76, 127],
+            [253, 141, 60, 170],
+            [240, 59, 32, 212],
+            [189, 0, 38, 255]];
+        contours = BANDS;
+        grid_color = colorRange
+        cellSize = 45000;
+        
+      const {GeoJsonLayer,HeatmapLayer,DeckGL,ContourLayer,TextLayer,ScreenGridLayer,HexagonLayer,PathLayer, _GlobeView, TileLayer,COORDINATE_SYSTEM,SolidPolygonLayer,ScatterplotLayer} = deck;
+        const {OBJLoader} = loaders;
+      setInterval(() => {
+        deckgl.setProps({
+          layers: [...backgroundLayers,                 
+
+        
+            new AnimatedArcLayer({
+                id: 'ArcLayer',
+                data: jsonArcData.rows ,
+              //visible: MIN_TIME < currentTime && MAX_TIME > currentTime + TIME_WINDOW,
+                 getSourcePosition: d => [d.lon1, d.lat1],
+                //getSourcePosition: d => d.from.coordinates,
+
+                 getTargetPosition: d => [d.lon2, d.lat2],
+             //  getTargetPosition: d => d.to.coordinates,
+
+                getSourceTimestamp: d => d.time1,
+                getTargetTimestamp: d => d.time2,
+                getHeight: 3,
+                getWidth: 5,
+                timeRange: [currentTime, currentTime + TIME_WINDOW],
+                getSourceColor: [255, 255, 0],
+                getTargetColor: [220,20,60],
+                pickable:  true,
+
+            }),   
+                   
+        
+              new PathLayer({
+  id: 'PathLayer',
+  //data: 'https://raw.githubusercontent.com/visgl/deck.gl-data/master/website/bart-lines.json',
+  data: 'https://raw.githubusercontent.com/vsy508/Cyber_Threat_Weather/main/geojson/state1.json',
+  //data: 'https://raw.githubusercontent.com/vsy508/Cyber_Threat_Weather/main/geojson/path1.json',
+  //data: 'https://raw.githubusercontent.com/vsy508/Cyber_Threat_Weather/main/geojson/dists11.geojson',
+  
+  // props from PathLayer class 
+  
+  // billboard: false,
+  // capRounded: false,
+  //getColor: [255, 255, 255], //white
+  getColor: [213, 219, 219], //silver
+  //getColor: [0, 0, 0], //black
+                  
+         //         getColor: d => {
+    //const hex = d.color;
+    // convert to RGB
+    //return hex.match(/[0-9a-f]{2}/g).map(x => parseInt(x, 16));
+  //},
+  getPath: d => d.coordinates,
+  getWidth: d => 1,
+  // jointRounded: false,
+  // miterLimit: 4,
+  // widthMaxPixels: Number.MAX_SAFE_INTEGER,
+  widthMinPixels: 2,
+  widthScale: 5,
+  // widthUnits: 'meters',
+  
+  // props inherited from Layer class 
+  
+  // autoHighlight: false,
+  // coordinateOrigin: [0, 0, 0],
+  // coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
+  // highlightColor: [0, 0, 128, 128],
+  // modelMatrix: null,
+  opacity: 1,
+  parameters: {
+    depthMask: false
+  },
+  pickable: false,
+  // visible: true,
+  // wrapLongitude: false,
+}),
+
+                   
+                 
+                   new ScatterplotLayer({
+  id: 'ScatterplotLayer',
+  data: 'https://raw.githubusercontent.com/vsy508/Cyber_Threat_Weather/main/geojson/TI_weather_lat_lon1.json',
+    
+  antialiasing: true,
+  // billboard: false,
+  // filled: true,
+  getFillColor: d => (d.Count > 10 ? (d.Count > 20 ? (d.Count > 200 ? ( d.Count > 2000 ? ( d.Count > 5000 ? color5 : color5): color4) : color3): color2) : color1),
+  //getFillColor: d => (d[2] === 1 ? maleColor : femaleColor),
+  //getFillColor: [255, 102, 51], //orange
+  //colorRange: [[255, 255, 178, 25],[254, 217, 118, 85],[254, 178, 76, 127],[253, 141, 60, 170],[240, 59, 32, 212],[189, 0, 38, 255]],
+  getLineColor: [0, 0, 0],
+  // getLineWidth: 1,
+  getPosition: d => d.coordinates,
+  //getRadius: d => d.Count,
+  getRadius: d => Math.log(d.Count)*1000,
+  //getRadius: d => Math.sqrt(d.Count),
+  // lineWidthMaxPixels: Number.MAX_SAFE_INTEGER,
+  lineWidthMinPixels: 1,
+  // lineWidthScale: 1,
+  // lineWidthUnits: 'meters',
+  radiusMaxPixels: 100,
+  radiusMinPixels: 1,
+  radiusScale: 6,
+  radiusUnits: 'meters',
+  stroked: true,
+  
+  // props inherited from Layer class 
+  
+  // autoHighlight: false,
+  // coordinateOrigin: [0, 0, 0],
+  // coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
+  // highlightColor: [0, 0, 128, 128],
+  // modelMatrix: null,
+  opacity: 0.1,
+  pickable: false,
+  // visible: true,
+  wrapLongitude: true,              
+}),
+                   
+                  /* 
+                   new ContourLayer({
+      data: 'https://raw.githubusercontent.com/vsy508/Cyber_Threat_Weather/main/geojson/TI_weather_lat_lon1.json',
+      id: 'contour-layer',
+      getPosition: d => d.coordinates,
+      getWeight: d => d.Count,
+      updateTriggers: {
+        getWeight: d => d.Count
+      },
+      pickable: false,
+      aggregation: 'SUM',
+      contours,
+        opacity: 0.4,
+      cellSize
+    }),
+              */
+             /* 
+            new HexagonLayer({
+            id: 'hex',
+            data: data.rows,
+            elevationRange: [0, 7001],
+            elevationScale: 500,
+            extruded: true,
+            radius: 2000 ,
+            wrapLongitude: true,
+            colorRange: [[0,255,255],[255, 87, 51],[255, 158, 61],  [255, 87, 51],[0,255,255], [31, 255, 15], [247, 33, 25]],
+            getColorValue: null,
+            getPosition: d => [d.Longitude , d.Latitude],
+            //getWeight: d => d.City.Count,
+            autoHighlight: true,
+            upperPercentile: 100,
+            pickable: true,
+            filled:true,
+            extruded:true}),*/
+                   
+                   
+             
+                new TextLayer({
+                    id: 'text-layer',
+                    data: 'https://raw.githubusercontent.com/vsy508/Cyber_Threat_Weather/main/geojson/text_layer.json',
+                    pickable: false,
+                    getPosition: d => [d.Longitude, d.Latitude],
+                    getText: d => d.City_name_TI,
+                    getSize: 8,
+                    getColor: [0, 0, 0],
+                    getTextAnchor: 'middle',    
+                    getAlignmentBaseline: 'top',
+                    lineHeight: 0.8,
+                    sizeScale: 1.3 ,    
+                    //backgroundColor:[213, 219, 219],
+                    extuded:false  ,
+                    billboard: true,
+                    getAngle: 0,
+                    fontWeight: 'bolder',
+                    getElevation:600000
+      }), 
+      
+         /*          
+
+    new ScreenGridLayer({
+        id: 'grid',
+        data: 'https://raw.githubusercontent.com/vsy508/Cyber_Threat_Weather/main/geojson/grid.json',
+        opacity: 1,
+        getPosition: d => [d[0], d[1]],
+        getWeight: d => d[2],
+        cellSizePixels: 8,
+        contours,
+        gpuAggregation: true,
+        aggregation: 'SUM',
+    }),
+         */          
+                   
+/*
+            new HeatmapLayer({
+            id: 'hex',
+            data: data.rows,
+            elevationRange: [0, 7001],
+            elevationScale: 500,
+            extruded: true,
+            radius: 20000000 ,
+            wrapLongitude: true,
+            colorRange: [[255, 255, 178], [254, 217, 118], [254, 178, 76], [253, 141, 60], [240, 59, 32], [189, 0, 38]],
+            getColorValue: null,
+            getPosition: d => [d.Longitude , d.Latitude],
+            //getWeight: d => d.City.Count,
+            autoHighlight: true,
+            upperPercentile: 10,
+            pickable: false,
+            filled:true,
+            extruded:true,
+            //radiusPixels: 25000,
+            threshold:0.01,
+            }) */
+]
+
+        });
+
+
+        currentTime = currentTime + 10;  //arclayer layer animation time
+
+        if (currentTime >= MAX_TIME) {
+          currentTime = 0;
+        }
+
+        sunLight.timestamp = getDate(currentTime).getTime();
+      }, 50);
+    }
+
+    initialize();
+      
+  </script>
+</html> 
