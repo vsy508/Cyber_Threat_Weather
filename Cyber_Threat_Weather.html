@@ -1,0 +1,248 @@
+<html>
+    <head>
+        <meta charset="utf-8"/>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+        <title>Cyber Threat Weather Powered By Quick Heal</title>
+        <link href='https://api.tiles.mapbox.com/mapbox-gl-js/v1.10.0/mapbox-gl.css' rel='stylesheet'/>
+        <script src="https://unpkg.com/deck.gl@^8.6.0/dist.min.js"></script>
+        <script src="https://unpkg.com/@deck.gl/carto@^8.6.0/dist.min.js"></script>
+        <script src="https://libs.cartocdn.com/mapbox-gl/v1.13.0/mapbox-gl.js"></script>
+        <link href="https://libs.cartocdn.com/mapbox-gl/v1.13.0/mapbox-gl.css" rel="stylesheet"/>
+    </head>
+    <body style="margin: 0; padding: 0; background:("")  ">
+        <div id="map" style="width: 50vw; height: 50vh; overflow: hidden;"></div>
+        <div style={{ position: 'absolute', left: x, top: y}} />
+        <div id="map"></div>
+        <div id="tooltip"></div>
+    </body>
+    <script type="text/javascript">
+        class AnimatedArcLayer extends deck.ArcLayer {
+            getShaders() {
+                const shaders = super.getShaders();
+                shaders.inject = {
+                    'vs:#decl': `\
+                                uniform vec2 timeRange;
+                                attribute float instanceSourceTimestamp;
+                                attribute float instanceTargetTimestamp;
+                                varying float vTimestamp;
+                                `,
+                    'vs:#main-end': `\
+                                    vTimestamp = mix(instanceSourceTimestamp, instanceTargetTimestamp, segmentRatio);
+                                    `,
+                    'fs:#decl': `\
+                                uniform vec2 timeRange;
+                                varying float vTimestamp;
+                                `,
+                    'fs:#main-start': `\
+                                        if (vTimestamp < timeRange.x || vTimestamp > timeRange.y) {
+                                            discard;}
+                                        `,
+                    'fs:DECKGL_FILTER_COLOR': `\
+                                                color.a *= (vTimestamp - timeRange.x) / (timeRange.y - timeRange.x);`
+                };
+                return shaders;
+            }
+            initializeState() {
+                super.initializeState();
+                this.getAttributeManager().addInstanced({
+                    instanceSourceTimestamp: {
+                        size: 1,
+                        accessor: 'getSourceTimestamp'
+                    },
+                    instanceTargetTimestamp: {
+                        size: 1,
+                        accessor: 'getTargetTimestamp'
+                    }
+                });
+            }
+            draw(params) {
+                params.uniforms = Object.assign({}, params.uniforms, {
+                    timeRange: this.props.timeRange
+                });
+                super.draw(params);
+            }
+        }
+        AnimatedArcLayer.layerName = 'AnimatedArcLayer';
+        AnimatedArcLayer.defaultProps = {
+            getSourceTimestamp: {type: 'accessor', value: 0},
+            getTargetTimestamp: {type: 'accessor', value: 1},
+            timeRange: {type: 'array', compare: true, value: [0, 1]}
+        };
+        const INITIAL_VIEW_STATE = {
+            longitude: 77.4126,
+            //longitude: 77.4126,
+            latitude: 22.2599,
+            //latitude: 23.2599,
+            zoom: 3.9,
+            maxZoom: 16,
+            minZoom: 3.6,
+            pitch: 0,
+            bearing: 0
+        };
+        const TIME_WINDOW = 600; // 10 minutes
+        //const TIME_WINDOW = 900; // 15 minutes
+        const EARTH_RADIUS_METERS = 6.3e6;
+        const MIN_TIME = 5;
+        const MAX_TIME = 103289;
+        const SEC_PER_DAY = 60 * 60 * 24;
+        const ambientLight = new deck.AmbientLight({
+            color: [255, 255, 255],
+            intensity: 0.5
+        });
+        const sunLight = new deck._SunLight({
+            color: [255, 255, 255],
+            intensity: 0.5,
+            timestamp: 0
+        });
+        //create lighting effect with light sources
+        const lightingEffect = new deck.LightingEffect({ ambientLight, sunLight });
+        //Look up the real date time from our artifical timestamp
+        function getDate(t) {
+            const timestamp = new Date('2020-01-14T00:00:00Z').getTime() + (t % SEC_PER_DAY) * 1000;
+            return new Date(timestamp);
+        }
+        async function initialize() {
+            // Fetch Data from CARTO
+            deck.carto.setDefaultCredentials({
+                username: 'public',
+                apiKey: 'default_public',
+                apiVersion: deck.carto.API_VERSIONS.V2,
+            });
+            const ArcUrl = `https://raw.githubusercontent.com/vsy508/Cyber_Threat_Weather/main/geojson/arc_layer.json`;
+            const jsonArcData = await fetch(ArcUrl).then(response => response.json());
+            const worldLandQuery = 'SELECT the_geom FROM ne_50m_land_world';
+            const worldLandUrl = `https://public.carto.com/api/v2/sql?q=${worldLandQuery}&format=geojson`;
+            const geoJsonWorldLandData = await fetch(worldLandUrl).then(response => response.json());
+            const geojson = await fetch(worldLandUrl).then(response => response.json());
+            const url = 'https://public.carto.com/api/v2/sql?q=SELECT the_geom, weight FROM uber_pickup_locations&format=geojson';
+            const geojsonData = await fetch(url).then(response => response.json());
+            const backgroundLayers = [
+                new deck.GeoJsonLayer({
+                    data: "https://raw.githubusercontent.com/vsy508/Cyber_Threat_Weather/main/India_geojson/states.geojson",
+                    getFillColor: [169, 223, 191],  //green
+                    getLineColor: [233,79,100],
+                    getLineWidth: 20,
+                    getPointRadius: 10,
+                    pickable: false,
+                    stroked: false,
+                    filled: true,
+                    extruded: false,
+                    opacity: 0.1
+                })
+            ];
+            const {GeoJsonLayer,DeckGL,TextLayer,PathLayer, _GlobeView,COORDINATE_SYSTEM,ScatterplotLayer} = deck;
+            //Create Deck.GL map
+            const deckgl = new deck.DeckGL({
+                initialViewState: INITIAL_VIEW_STATE,
+                getTooltip: ({object}) => object && `City Name: ${object.City_Name} \n Threat Index(TI): ${object.Count}`,
+                //getTooltip: ({object}) => object && `Number of Attacks: ${object.Count}`,
+                //getTooltip: ({object}) => object && `Malware: ${object.malware} \n Previous place: ${object.start} \n Current place: ${object.end}`,
+                mapStyle: 'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json',
+                //mapStyle: 'https://basemaps.cartocdn.com/gl/dark-matter-nolabels-gl-style/style.json',
+                //mapStyle: 'https://basemaps.cartocdn.com/gl/positron-gl-style/style.json',
+                //mapStyle: 'https://basemaps.cartocdn.com/gl/voyager-gl-style/style.json',
+                controller: true,
+                effects: [lightingEffect],
+               
+            });
+            let currentTime = 0;
+            
+            const color1 = [44, 186, 0];
+            const color2 = [163, 255, 0];
+            const color3 = [255, 244, 0];
+            const color4 = [255, 167, 0];
+            const color5 = [183, 28, 28];
+            
+            const {OBJLoader} = loaders;
+            setInterval(() => {
+                deckgl.setProps({
+                    layers: [...backgroundLayers,
+                             new PathLayer({
+                                 id: 'PathLayer',
+                                 data: 'https://raw.githubusercontent.com/vsy508/Cyber_Threat_Weather/main/India_geojson/India_States.json',
+                                 billboard: true,
+                                 capRounded: true,
+                                 //getColor: [255, 255, 255], //white
+                                 getColor: [96, 125, 139], //silver
+                                 getPath: d => d.coordinates,
+                                 getWidth: d => 1,
+                                 jointRounded: true,
+                                 widthMaxPixels: Number.MAX_SAFE_INTEGER,
+                                 widthMinPixels: 1.2,
+                                 widthScale: 1,
+                                 widthUnits: 'meters',
+                                 opacity: 0.5
+                             }),
+                             new ScatterplotLayer({
+                                 id: 'ScatterplotLayer',
+                                 data: 'https://raw.githubusercontent.com/vsy508/Cyber_Threat_Weather/main/geojson/TI_weather_lat_lon1.json',
+                                 antialiasing: true,
+                                 getFillColor: d => (d.Count > 10 ? (d.Count > 100 ? (d.Count > 1000 ? ( d.Count > 10000 ? color5 : color4) : color3): color2) : color1),
+                                 getLineColor: [0, 0, 0],
+                                 getPosition: d => d.coordinates,
+                                 getRadius: d => Math.log(d.Count)*1000,
+                                 lineWidthMinPixels: 1,
+                                 lineWidthScale: 1,
+                                 lineWidthUnits: 'meters',
+                                 radiusMaxPixels: 90,
+                                 radiusMinPixels: 1,
+                                 radiusScale: 7,
+                                 radiusUnits: 'meters',
+                                 stroked: true,
+                                 pickable: true,
+                                 opacity: 0.5
+                             }),
+                             new TextLayer({
+                                 id: 'text-layer',
+                                 data: 'https://raw.githubusercontent.com/vsy508/Cyber_Threat_Weather/main/geojson/text_layer.json',
+                                 pickable: false,
+                                 getPosition: d => [d.Longitude, d.Latitude],
+                                 getText: d => d.City_name_TI,
+                                 getSize: 8,
+                                 getColor: [255, 255, 255],
+                                 getTextAnchor: 'middle',    
+                                 getAlignmentBaseline: 'top',
+                                 //getBorderColor: [0,0,0],
+                                 fontSettings: {sdf: true,
+                                                fontSize: 90,
+                                                radius: 25,
+                                                smoothing: 0.2},
+                                 outlineWidth: 1,
+                                 //outlineColor: [233, 247, 239 ], //light blue
+                                 lineHeight: 0.8,
+                                 sizeScale: 1.2,
+                                 billboard: true,
+                                 fontFamily: 'sans-serif', //'Georgia','serif','sans-serif','cursive','system-ui'
+                                 getAngle: 0,
+                                 fontWeight: 'bold',
+                                 opacity: 0.8
+                             }),
+                             new AnimatedArcLayer({
+                                 id: 'ArcLayer',
+                                 data: jsonArcData.rows,
+                                 getSourcePosition: d => [d.lon1, d.lat1],
+                                 getTargetPosition: d => [d.lon2, d.lat2],
+                                 getSourceTimestamp: d => d.time1,
+                                 getTargetTimestamp: d => d.time2,
+                                 getHeight: 3,
+                                 getWidth: 10,
+                                 timeRange: [currentTime, currentTime + TIME_WINDOW],
+                                 //getSourceColor: [255, 255, 0],
+                                 getSourceColor: [51, 0, 255],
+                                 getTargetColor: [0, 0, 153],
+                                 //getTargetColor: [220,20,60],
+                                 pickable: false
+                             }),
+                            ]
+                });
+                
+                currentTime = currentTime + 20;  //arclayer layer animation time
+                if (currentTime >= MAX_TIME) {
+                    currentTime = 0;
+                }
+                sunLight.timestamp = getDate(currentTime).getTime();
+            }, 50);
+        }
+        initialize();
+    </script>
+</html> 
